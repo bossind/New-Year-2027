@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://indian-newyear-wishes-2027.onrender.com/sitemap.xml

@@ -1,0 +1,57 @@
+databases:
+  - name: indian-newyear-2027-db
+    databaseName: indian_newyear_2027
+    user: indian_newyear_2027_user
+    plan: basic-256mb
+    region: singapore
+
+services:
+  - type: web
+    name: indian-newyear-wishes-2027
+    runtime: node
+    region: singapore
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npx tsx server.ts
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ADMIN_USERNAME
+        value: Roynorules
+      - key: ADMIN_PASSWORD_HASH
+        sync: false
+      - key: ADMIN_BOOTSTRAP_SECRET
+        generateValue: true
+      - key: TELEGRAM_BOT_ENCRYPTION_KEY
+        generateValue: true
+      - key: TELEGRAM_WEBHOOK_SECRET
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: FRONTEND_ORIGIN
+        sync: false
+      - key: SQL_HOST
+        fromDatabase:
+          name: indian-newyear-2027-db
+          property: host
+      - key: SQL_DB_NAME
+        fromDatabase:
+          name: indian-newyear-2027-db
+          property: database
+      - key: SQL_USER
+        fromDatabase:
+          name: indian-newyear-2027-db
+          property: user
+      - key: SQL_PASSWORD
+        fromDatabase:
+          name: indian-newyear-2027-db
+          property: password
+      - key: SQL_ADMIN_USER
+        fromDatabase:
+          name: indian-newyear-2027-db
+          property: user
+      - key: SQL_ADMIN_PASSWORD
+        fromDatabase:
+          name: indian-newyear-2027-db
+          property: password
