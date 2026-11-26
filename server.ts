@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction } from 'express';
+import crypto from 'node:crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import * as dotenv from 'dotenv';
@@ -73,20 +74,47 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     'camera=(self), microphone=(), geolocation=(), payment=()'
   );
 
-  // Restrict CORS on /api/* to configured FRONTEND_ORIGIN or same host
-  const allowedOrigin = process.env.FRONTEND_ORIGIN;
+  // Restrict CORS on /api/* to configured FRONTEND_ORIGIN, APP_URL, or matching Render/Cloud Run origins
+  const allowedOriginEnv = (process.env.FRONTEND_ORIGIN || '').trim();
+  const appUrlEnv = (process.env.APP_URL || '').trim();
   const reqOrigin = req.headers.origin;
-  if (allowedOrigin && reqOrigin === allowedOrigin) {
-    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-    res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Content-Type, Authorization, X-CSRF-Token, X-Requested-With'
-    );
-    res.setHeader(
-      'Access-Control-Allow-Methods',
-      'GET, POST, PUT, PATCH, DELETE, OPTIONS'
-    );
+
+  if (reqOrigin) {
+    let allowCors = false;
+    if (allowedOriginEnv) {
+      const allowedList = allowedOriginEnv
+        .split(',')
+        .map((o) => o.trim().replace(/\/+$/, ''))
+        .filter(Boolean);
+      if (allowedList.includes(reqOrigin.replace(/\/+$/, ''))) {
+        allowCors = true;
+      }
+    } else if (
+      appUrlEnv &&
+      reqOrigin.replace(/\/+$/, '') === appUrlEnv.replace(/\/+$/, '')
+    ) {
+      allowCors = true;
+    } else if (
+      reqOrigin.endsWith('.onrender.com') ||
+      reqOrigin.endsWith('.run.app') ||
+      reqOrigin.startsWith('http://localhost:')
+    ) {
+      allowCors = true;
+    }
+
+    if (allowCors) {
+      res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-CSRF-Token, X-Requested-With, Accept'
+      );
+      res.setHeader(
+        'Access-Control-Allow-Methods',
+        'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+      );
+    }
   }
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
@@ -1065,24 +1093,25 @@ app.post(
   publicAnalyticsLimiter,
   async (req: Request, res: Response) => {
     try {
-      const { config, password } = req.body || {};
-      if (!config || typeof config !== 'object' || !config.wishId) {
+      const { config, wish, password } = req.body || {};
+      const rawWish = wish || config;
+      if (!rawWish || typeof rawWish !== 'object') {
         return res.status(400).json({ error: 'Invalid wish configuration payload.' });
       }
 
-      const wishId = String(config.wishId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 36);
-      if (!wishId) {
-        return res.status(400).json({ error: 'Invalid wishId.' });
-      }
+      const candidateId = rawWish.wishId
+        ? String(rawWish.wishId).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 36)
+        : `w27_${crypto.randomBytes(6).toString('hex')}`;
+      const wishId = candidateId || `w27_${crypto.randomBytes(6).toString('hex')}`;
 
       let passwordHash: string | null = null;
-      if (config.passwordProtected && password && String(password).trim()) {
+      if (rawWish.passwordProtected && password && String(password).trim()) {
         // Hash password with bcrypt (never store plaintext!)
         passwordHash = await bcrypt.hash(String(password).trim(), 10);
       }
 
       const cleanConfig = {
-        ...config,
+        ...rawWish,
         wishId,
         passwordProtected: Boolean(passwordHash),
       };
@@ -1136,6 +1165,7 @@ app.get('/api/wishes/:wishId', (req: Request, res: Response) => {
     wishId: record.wishId,
     locked: false,
     passwordProtected: false,
+    wish: record.config,
     config: record.config,
   });
 });
@@ -1161,6 +1191,7 @@ app.post(
         return res.json({
           ok: true,
           locked: false,
+          wish: record.config,
           config: record.config,
         });
       }
@@ -1180,6 +1211,7 @@ app.post(
       res.json({
         ok: true,
         locked: false,
+        wish: record.config,
         config: record.config,
       });
     } catch {
@@ -1189,7 +1221,63 @@ app.post(
 );
 
 // ==================================================
-// 9. VITE DEV MIDDLEWARE / STATIC PROD SERVING
+// 9. API JSON 404 CATCH-ALL & GLOBAL API JSON ERROR HANDLER
+// (Guarantees /api/* never falls through to Vite/SPA index.html or Express HTML error pages)
+// ==================================================
+app.all('/api/*', (req: Request, res: Response) => {
+  res.status(404).json({
+    ok: false,
+    error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
+  });
+});
+
+app.use(
+  (
+    err: Error & { status?: number; statusCode?: number; type?: string },
+    req: Request,
+    res: Response,
+    next: NextFunction
+  ) => {
+    if (res.headersSent) {
+      return next(err);
+    }
+
+    const status =
+      typeof err.status === 'number'
+        ? err.status
+        : typeof err.statusCode === 'number'
+        ? err.statusCode
+        : 500;
+
+    if (req.originalUrl.startsWith('/api/') || req.path.startsWith('/api/')) {
+      if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+        return res.status(400).json({
+          ok: false,
+          error: 'Invalid JSON request payload.',
+        });
+      }
+      if (err.type === 'entity.too.large') {
+        return res.status(413).json({
+          ok: false,
+          error: 'Request payload is too large.',
+        });
+      }
+      console.error(`Unhandled API error on ${req.method} ${req.originalUrl}:`, err);
+      return res.status(status).json({
+        ok: false,
+        error:
+          status >= 500
+            ? 'Internal server error while processing API request.'
+            : err.message || 'API request failed.',
+      });
+    }
+
+    next(err);
+  }
+);
+
+// ==================================================
+// 10. VITE DEV MIDDLEWARE / STATIC PROD SERVING
 // ==================================================
 async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
@@ -1203,7 +1291,13 @@ async function startServer() {
   } else {
     const distPath = path.join(__dirname, 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req: Request, res: Response) => {
+    app.get('*', (req: Request, res: Response) => {
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({
+          ok: false,
+          error: `API endpoint not found: ${req.method} ${req.originalUrl}`,
+        });
+      }
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

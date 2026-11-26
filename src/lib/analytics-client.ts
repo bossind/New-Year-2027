@@ -2,6 +2,7 @@
  * Privacy-conscious Client Analytics & Live Heartbeat Tracker
  * Generates anonymous visitor IDs, deduplicates refreshes, and sends non-blocking events.
  */
+import { resolveApiUrl } from './api-client';
 
 function randomId(prefix: string): string {
   const bytes = new Uint8Array(12);
@@ -122,7 +123,7 @@ export function trackGiftOpened(params: {
 
 function sendAnalyticsPayload(payload: Record<string, unknown>) {
   try {
-    fetch('/api/analytics/event', {
+    fetch(resolveApiUrl('/api/analytics/event'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -141,7 +142,7 @@ export function sendVisitorHeartbeat() {
   }
   const visitorId = getAnonymousVisitorId();
   try {
-    fetch('/api/analytics/heartbeat', {
+    fetch(resolveApiUrl('/api/analytics/heartbeat'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ visitorId }),

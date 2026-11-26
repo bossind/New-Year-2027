@@ -3,6 +3,7 @@ import {
   MusicCategory,
   MusicMood,
 } from '../types/wish';
+import { resolveApiUrl, parseSafeJsonResponse } from '../lib/api-client';
 
 export const MUSIC_CATEGORIES: Array<{
   id: MusicCategory;
@@ -306,13 +307,11 @@ class MusicEngineController {
 
   public async fetchCatalogFromApi(): Promise<MusicCatalogEntry[]> {
     try {
-      const res = await fetch('/api/music/catalog');
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.songs) && data.songs.length > 0) {
-          this.catalog = data.songs;
-          this.notify();
-        }
+      const res = await fetch(resolveApiUrl('/api/music/catalog'));
+      const { ok, data } = await parseSafeJsonResponse(res);
+      if (ok && Array.isArray(data.songs) && data.songs.length > 0) {
+        this.catalog = data.songs as MusicCatalogEntry[];
+        this.notify();
       }
     } catch {
       // Fallback to built-in catalog if offline
@@ -594,13 +593,20 @@ class MusicEngineController {
     }
 
     try {
-      const res = await fetch('/api/music/validate-drive', {
+      const res = await fetch(resolveApiUrl('/api/music/validate-drive'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: rawUrl, fileId }),
       });
-      if (res.ok) {
-        return await res.json();
+      const { ok, data, isJson } = await parseSafeJsonResponse(res);
+      if (ok && isJson && typeof data.valid === 'boolean') {
+        return {
+          valid: Boolean(data.valid),
+          fileId: data.fileId ? String(data.fileId) : fileId,
+          streamable: Boolean(data.streamable),
+          streamUrl: data.streamUrl ? resolveApiUrl(String(data.streamUrl)) : null,
+          reason: String(data.reason || ''),
+        };
       }
     } catch {
       // ignore network error and return client validation
@@ -610,7 +616,7 @@ class MusicEngineController {
       valid: true,
       fileId,
       streamable: false,
-      streamUrl: `/api/music/stream/${encodeURIComponent(fileId)}`,
+      streamUrl: resolveApiUrl(`/api/music/stream/${encodeURIComponent(fileId)}`),
       reason:
         'Google Drive link syntax is valid. Direct streaming depends on file public permissions.',
     };

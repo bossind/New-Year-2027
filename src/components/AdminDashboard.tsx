@@ -31,6 +31,10 @@ import {
 } from 'lucide-react';
 import { MSG, UI, LangCode } from '../data/i18n';
 import { ANIM, AnimId } from '../engine/animations';
+import {
+  parseSafeJsonResponse,
+  resolveApiUrl,
+} from '../lib/api-client';
 
 type DateFilterPreset =
   | 'today'
@@ -310,6 +314,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
     async (url: string, options: RequestInit = {}) => {
       const headers = new Headers(options.headers || {});
       headers.set('X-Requested-With', 'XMLHttpRequest');
+      if (!headers.has('Accept')) {
+        headers.set('Accept', 'application/json');
+      }
       if (sessionToken) {
         headers.set('Authorization', `Bearer ${sessionToken}`);
       }
@@ -319,7 +326,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
       if (options.body && !headers.has('Content-Type')) {
         headers.set('Content-Type', 'application/json');
       }
-      const res = await fetch(url, {
+      const res = await fetch(resolveApiUrl(url), {
         ...options,
         headers,
         credentials: 'include',
@@ -339,11 +346,19 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
     let mounted = true;
     (async () => {
       try {
-        const res = await fetch('/api/admin/auth/status', {
+        const res = await fetch(resolveApiUrl('/api/admin/auth/status'), {
+          headers: { Accept: 'application/json' },
           credentials: 'include',
         });
-        const data = await res.json();
+        const parsed = await parseSafeJsonResponse(res);
         if (!mounted) return;
+        if (!parsed.isJson || !parsed.ok) {
+          setAuthError(
+            parsed.errorMessage || 'Unable to reach authentication server.'
+          );
+          return;
+        }
+        const data = parsed.data;
         setAdminUsername(data.username || 'Roynorules');
         setLoginUsername(data.username || 'Roynorules');
         setIsPasswordConfigured(Boolean(data.isPasswordConfigured));
@@ -361,7 +376,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
           setIsAuthenticated(true);
         }
       } catch {
-        setAuthError('Unable to reach authentication server.');
+        if (mounted) {
+          setAuthError('Unable to reach authentication server.');
+        }
       } finally {
         if (mounted) setCheckingStatus(false);
       }
@@ -385,13 +402,21 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
 
     const poller = window.setInterval(async () => {
       try {
-        const res = await fetch('/api/admin/auth/verify-challenge', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: JSON.stringify({ challengeId }),
-        });
-        const data = await res.json();
+        const res = await fetch(
+          resolveApiUrl('/api/admin/auth/verify-challenge'),
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+            },
+            credentials: 'include',
+            body: JSON.stringify({ challengeId }),
+          }
+        );
+        const parsed = await parseSafeJsonResponse(res);
+        if (!parsed.isJson) return;
+        const data = parsed.data;
 
         if (data.status === 'approved' && data.authenticated) {
           window.clearInterval(poller);
@@ -445,12 +470,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
         qs.set('searchName', searchName.trim());
       }
       const res = await adminFetch(`/api/admin/analytics?${qs.toString()}`);
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to fetch analytics');
+      const parsed = await parseSafeJsonResponse<AnalyticsPayload>(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(parsed.errorMessage || 'Failed to fetch analytics');
       }
-      const data = (await res.json()) as AnalyticsPayload;
-      setAnalytics(data);
+      setAnalytics(parsed.data);
     } catch (e: unknown) {
       setAnalyticsError(
         e instanceof Error ? e.message : 'Error loading analytics.'
@@ -475,9 +499,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
     setTgLoading(true);
     try {
       const res = await adminFetch('/api/admin/telegram/status');
-      if (res.ok) {
-        const data = (await res.json()) as TelegramStatusPayload;
-        setTgStatus(data);
+      const parsed = await parseSafeJsonResponse<TelegramStatusPayload>(res);
+      if (parsed.ok && parsed.isJson) {
+        setTgStatus(parsed.data);
       }
     } catch {
       // ignore
@@ -492,9 +516,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
     setSecurityLoading(true);
     try {
       const res = await adminFetch('/api/admin/security/logs');
-      if (res.ok) {
-        const data = await res.json();
-        setAuditLogs(data.auditLogs || []);
+      const parsed = await parseSafeJsonResponse(res);
+      if (parsed.ok && parsed.isJson) {
+        setAuditLogs(parsed.data.auditLogs || []);
       }
     } catch {
       // ignore
@@ -540,17 +564,26 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
     }
     setAuthLoading(true);
     try {
-      const res = await fetch('/api/admin/auth/claim-password', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: loginUsername,
-          password: loginPassword,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to save admin password.');
+      const res = await fetch(
+        resolveApiUrl('/api/admin/auth/claim-password'),
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            username: loginUsername,
+            password: loginPassword,
+          }),
+        }
+      );
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(
+          parsed.errorMessage || 'Failed to save admin password.'
+        );
       }
       setIsPasswordConfigured(true);
       setAuthSuccess(
@@ -573,16 +606,28 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
     setAuthSuccess('');
     setAuthLoading(true);
     try {
-      const res = await fetch('/api/admin/auth/login', {
+      const res = await fetch(resolveApiUrl('/api/admin/auth/login'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
         credentials: 'include',
         body: JSON.stringify({
           username: loginUsername,
           password: loginPassword,
         }),
       });
-      const data = await res.json();
+      const parsed = await parseSafeJsonResponse(res);
+
+      if (!parsed.isJson) {
+        throw new Error(
+          parsed.errorMessage ||
+            'Unexpected non-JSON response from authentication server.'
+        );
+      }
+
+      const data = parsed.data;
 
       if (res.status === 428 && data.requiresEnrollment) {
         setAuthStep('enroll_telegram');
@@ -591,7 +636,9 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
       }
 
       if (!res.ok) {
-        throw new Error(data.error || 'Login failed.');
+        throw new Error(
+          data.error || parsed.errorMessage || 'Login failed.'
+        );
       }
 
       if (data.challengeRequired && data.challengeId) {
@@ -618,22 +665,32 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
     setAuthSuccess('');
     setAuthLoading(true);
     try {
-      const res = await fetch('/api/admin/auth/enroll-telegram', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: loginUsername,
-          password: loginPassword,
-          bootstrapSecret: enrollBootstrapSecret,
-          telegramUserId: enrollTelegramId,
-          firstName: enrollFirstName,
-          botToken: enrollBotToken,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Telegram enrollment failed.');
+      const res = await fetch(
+        resolveApiUrl('/api/admin/auth/enroll-telegram'),
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          credentials: 'include',
+          body: JSON.stringify({
+            username: loginUsername,
+            password: loginPassword,
+            bootstrapSecret: enrollBootstrapSecret,
+            telegramUserId: enrollTelegramId,
+            firstName: enrollFirstName,
+            botToken: enrollBotToken,
+          }),
+        }
+      );
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(
+          parsed.errorMessage || 'Telegram enrollment failed.'
+        );
       }
+      const data = parsed.data;
       setAuthSuccess(
         `Authorized Telegram ID ${data.enrolled.telegramUserId} enrolled! Click "Verify & Request Telegram Approval" to log in.`
       );
@@ -702,11 +759,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
         method: 'POST',
         body: JSON.stringify({ botToken: newBotTokenInput.trim() }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save token');
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(parsed.errorMessage || 'Failed to save token');
+      }
       setNewBotTokenInput('');
       setTgActionMsg(
-        data.message ||
+        parsed.data.message ||
           'Save Successful! Token validated with getMe and encrypted.'
       );
       await fetchTelegramStatus();
@@ -727,8 +786,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
       const res = await adminFetch('/api/admin/telegram/connect', {
         method: 'POST',
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to connect bot');
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(parsed.errorMessage || 'Failed to connect bot');
+      }
+      const data = parsed.data;
       setTgActionMsg(
         `CONNECTED! Bot @${data.botUsername || data.botFirstName} is active (${data.webhookUrl}).`
       );
@@ -750,8 +812,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
       const res = await adminFetch('/api/admin/telegram/test', {
         method: 'POST',
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Test failed');
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(parsed.errorMessage || 'Test failed');
+      }
+      const data = parsed.data;
       setTgActionMsg(
         `Test message delivered to ${data.deliveredCount}/${data.enrolledAdminsCount} enrolled Telegram admin(s) via @${data.botUsername || data.botFirstName}!`
       );
@@ -773,8 +838,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
       const res = await adminFetch('/api/admin/telegram/disconnect', {
         method: 'POST',
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Disconnect failed');
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(parsed.errorMessage || 'Disconnect failed');
+      }
       setDisconnectConfirmOpen(false);
       setTgActionMsg('Telegram Bot disconnected and encrypted token deleted.');
       await fetchTelegramStatus();
@@ -815,9 +882,11 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
         method: 'POST',
         body: JSON.stringify({ reportType }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to send report');
-      setReportPreviewText(data.reportText || '');
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(parsed.errorMessage || 'Failed to send report');
+      }
+      setReportPreviewText(parsed.data.reportText || '');
       setTgActionMsg(
         `${reportType.toUpperCase()} Report generated from database and queued for Telegram delivery!`
       );
@@ -846,12 +915,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
           firstName: 'Roynorules',
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to enroll ID');
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(parsed.errorMessage || 'Failed to enroll ID');
+      }
       setNewEnrollIdInput('');
       setNewEnrollSecretInput('');
       setTgActionMsg(
-        `Authorized Telegram numeric user ID ${data.enrolled.telegramUserId} saved!`
+        `Authorized Telegram numeric user ID ${parsed.data.enrolled.telegramUserId} saved!`
       );
       await fetchTelegramStatus();
     } catch (err: unknown) {
@@ -875,11 +946,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({ onClose }) => {
           newPassword: newPwdInput,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to update password');
+      const parsed = await parseSafeJsonResponse(res);
+      if (!parsed.ok || !parsed.isJson) {
+        throw new Error(
+          parsed.errorMessage || 'Failed to update password'
+        );
+      }
       setCurPwdInput('');
       setNewPwdInput('');
-      setPwdChangeMsg(data.message || 'Password updated successfully.');
+      setPwdChangeMsg(
+        parsed.data.message || 'Password updated successfully.'
+      );
       await fetchSecurityLogs();
     } catch (err: unknown) {
       setPwdChangeErr(

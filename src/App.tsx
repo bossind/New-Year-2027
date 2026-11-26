@@ -38,6 +38,7 @@ import {
 import { QRCodeDesigner } from './components/QRCodeModal';
 import { CreatorStudio } from './components/CreatorStudio';
 import { AdminPortal } from './components/AdminDashboard';
+import { resolveApiUrl, parseSafeJsonResponse } from './lib/api-client';
 import {
   sendVisitorHeartbeat,
   trackGiftOpened,
@@ -1653,26 +1654,28 @@ export default function App() {
     let cancelled = false;
     const loadStoredWish = async () => {
       try {
-        const res = await fetch(`/api/wishes/${encodeURIComponent(wid)}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        if (cancelled) return;
+        const res = await fetch(resolveApiUrl(`/api/wishes/${encodeURIComponent(wid)}`));
+        const { ok, data } = await parseSafeJsonResponse(res);
+        if (!ok || cancelled) return;
         if (data.locked) {
           setIsPasswordLocked(true);
           setWishConfig((prev) => ({
             ...prev,
-            senderName: data.senderName || prev.senderName,
-            recipientName: data.recipientName || prev.recipientName,
+            senderName: String(data.senderName || prev.senderName),
+            recipientName: String(data.recipientName || prev.recipientName),
             passwordProtected: true,
           }));
-        } else if (data.wish) {
-          setIsPasswordLocked(false);
-          setWishConfig((prev) => ({
-            ...prev,
-            ...data.wish,
-          }));
-          if (data.wish.language) {
-            setLang(data.wish.language);
+        } else {
+          const wishPayload = (data.wish || data.config) as Partial<WishConfig> | undefined;
+          if (wishPayload && typeof wishPayload === 'object') {
+            setIsPasswordLocked(false);
+            setWishConfig((prev) => ({
+              ...prev,
+              ...wishPayload,
+            }));
+            if (wishPayload.language) {
+              setLang(wishPayload.language);
+            }
           }
         }
       } catch {
@@ -1703,24 +1706,28 @@ export default function App() {
     setIsUnlocking(true);
     setUnlockError('');
     try {
-      const res = await fetch(`/api/wishes/${encodeURIComponent(wid)}/unlock`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pw }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.wish) {
+      const res = await fetch(
+        resolveApiUrl(`/api/wishes/${encodeURIComponent(wid)}/unlock`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: pw }),
+        }
+      );
+      const { ok, data } = await parseSafeJsonResponse(res);
+      const wishPayload = (data.wish || data.config) as Partial<WishConfig> | undefined;
+      if (!ok || !wishPayload) {
         setUnlockError(
-          data.error || 'Incorrect password. Please try again.'
+          String(data.error || 'Incorrect password. Please try again.')
         );
         return;
       }
       setWishConfig((prev) => ({
         ...prev,
-        ...data.wish,
+        ...wishPayload,
       }));
-      if (data.wish.language) {
-        setLang(data.wish.language);
+      if (wishPayload.language) {
+        setLang(wishPayload.language);
       }
       setIsPasswordLocked(false);
     } catch {
@@ -1990,21 +1997,20 @@ export default function App() {
 
     if (needsBackendRecord) {
       try {
-        const res = await fetch('/api/wishes', {
+        const res = await fetch(resolveApiUrl('/api/wishes'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             wish: finalizedConfig,
+            config: finalizedConfig,
             password: finalizedConfig.passwordProtected
               ? studioRawPassword.trim()
               : undefined,
           }),
         });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.wishId) {
-            assignedWishId = data.wishId;
-          }
+        const { ok, data } = await parseSafeJsonResponse(res);
+        if (ok && data.wishId) {
+          assignedWishId = String(data.wishId);
         }
       } catch {
         // Proceed with URL params if backend is unreachable
